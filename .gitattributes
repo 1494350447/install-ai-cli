@@ -1,0 +1,6 @@
+# shell 脚本必须保持 LF，否则在 Windows 上 clone 出来会带 CRLF 而无法执行。
+# 这条随仓库分发，不依赖每个人本地的 core.autocrlf 设置。
+*.sh text eol=lf
+
+# 其余文本按内容自动判定
+* text=auto
