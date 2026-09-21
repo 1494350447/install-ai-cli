@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# install-ai-cli.sh — 国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness
+# install-ai-cli.sh — 国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness / OpenClaw
 #
 #   bash install-ai-cli.sh codex
 #   bash install-ai-cli.sh all
 #   bash install-ai-cli.sh dsh
+#   bash install-ai-cli.sh openclaw
 #   bash install-ai-cli.sh doctor
 #
 # 远程一条命令：
@@ -28,10 +29,13 @@ fi
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.3.0"
 
 # ---------------------------------------------------------------- 默认参数
 NODE_MAJOR="22"
+# 用户是否显式给过 --node-major。openclaw 需要 Node >= 24.16，没显式指定时脚本会自动抬，
+# 显式指定了就不动——那是用户的明确选择，只告警。
+NODE_MAJOR_EXPLICIT=0
 NODE_MIRROR="https://registry.npmmirror.com/-/binary/node"
 REGISTRY="https://registry.npmmirror.com"
 REGISTRY_FALLBACKS="https://mirrors.cloud.tencent.com/npm/ https://registry.npmjs.org"
@@ -111,7 +115,7 @@ ask() {
 # ---------------------------------------------------------------- 用法
 usage() {
   cat <<'EOF'
-国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness
+国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness / OpenClaw
 
 用法:
   bash install-ai-cli.sh <命令> [选项]
@@ -121,16 +125,21 @@ usage() {
   claude               安装 Claude Code
   opencode             安装 opencode
   dsh                  安装 DeepSeek Harness
-  all                  上面三个 CLI 全装（不含 dsh）
+  openclaw             安装 OpenClaw
+  all                  上面三个 CLI 全装（不含 dsh / openclaw）
   doctor               体检：打印环境、版本、路径、连通性
   version              打印脚本版本
   help                 显示本帮助
 
-dsh 与另外三个不一样，所以不并入 all：
-  它是常驻 Web 服务，不是敲完就结束的 CLI。装完用
-      dsh web --host 127.0.0.1 --port 3080
-  启动，前台运行、Ctrl-C 停止；它会打印一个带 token 的地址，复制到浏览器打开。
-  它对 Node 的要求也更严（^22.19.0 || >=24.0.0），脚本会自动检查。
+dsh 和 openclaw 与另外三个不一样，所以都不并入 all：
+  两者都是「装完还要自己起」的东西，不是敲完就结束的 CLI。
+      dsh web --host 127.0.0.1 --port 3080          # 带 token 的地址，浏览器打开
+      openclaw onboard                              # 首次配置，然后 openclaw gateway 起网关
+  两者对 Node 的要求都比默认的 22 严，脚本会自动检查：
+      dsh       ^22.19.0 || >=24.0.0
+      openclaw  >=24.16.0 <25 || >=26.1.0   ← 注意 25.x 整段被排除
+  单独装 openclaw 时，若你没显式给 --node-major，脚本会自动把 Node 抬到 24，
+  否则装了也起不来（24.x 目前最高 24.21.0，落在 openclaw 的区间内）。
   dsh 目前是开发者预览版（-rc），且需要 DEEPSEEK_API_KEY 才能真正调用模型。
 
 已安装的工具不会被直接覆盖：
@@ -141,7 +150,7 @@ dsh 与另外三个不一样，所以不并入 all：
       --reinstall          跳过询问，已装的一律卸载重装（同 --upgrade）
   -f, --force, --upgrade   同 --reinstall
   -y, --yes                非交互：已安装的一律跳过，不重装
-      --uninstall          卸载指定工具（配合 codex/claude/opencode/dsh/all）
+      --uninstall          卸载指定工具（配合 codex/claude/opencode/dsh/openclaw/all）
       --registry <URL>     npm 源，默认 https://registry.npmmirror.com
       --node-mirror <URL>  Node 二进制源，默认 https://registry.npmmirror.com/-/binary/node
       --node-major <N>     Node 大版本，默认 22
@@ -166,14 +175,14 @@ EOF
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      codex|claude|opencode|dsh|all|doctor|version|help) CMD="$1" ;;
+      codex|claude|opencode|dsh|openclaw|all|doctor|version|help) CMD="$1" ;;
       -h|--help)            CMD="help" ;;
       -f|--force|--upgrade|--reinstall) FORCE=1 ;;
       -y|--yes)             YES=1 ;;
       --uninstall)          DO_UNINSTALL=1 ;;
       --registry)           REGISTRY="${2:?--registry 需要一个 URL}"; shift ;;
       --node-mirror)        NODE_MIRROR="${2:?--node-mirror 需要一个 URL}"; shift ;;
-      --node-major)         NODE_MAJOR="${2:?--node-major 需要一个数字}"; shift ;;
+      --node-major)         NODE_MAJOR="${2:?--node-major 需要一个数字}"; NODE_MAJOR_EXPLICIT=1; shift ;;
       --no-node)            SKIP_NODE=1 ;;
       --native)             USE_NATIVE=1 ;;
       --set-registry)       SET_REGISTRY=1 ;;
@@ -486,6 +495,34 @@ node_satisfies_dsh() {
   return 1
 }
 
+# openclaw 的 engines 是 >=24.16.0 <25 || >=26.1.0 —— 比 dsh 还怪：它把 24.x 卡了 16 的小版本
+# 下限，又把 25.x 整段排除。所以 22.x / 23.x / 24.0~24.15 / 25.x 全不满足，只有
+# 24.16+ 和 26.1+ 可以。这里和下面一样，比较全写在 if 条件里，避免踩 set -e。
+node_satisfies_openclaw() {
+  command -v node >/dev/null 2>&1 || return 1
+  local v major minor rest
+  v="$(node -v 2>/dev/null || true)"
+  v="${v#v}"
+  major="${v%%.*}"
+  case "$v" in
+    *.*) rest="${v#*.}"; minor="${rest%%.*}" ;;
+    *)   minor=0 ;;
+  esac
+  if [ -z "$major" ]; then return 1; fi
+  if [ -z "$minor" ]; then minor=0; fi
+  if [ "$major" -eq 24 ] 2>/dev/null; then
+    if [ "$minor" -ge 16 ] 2>/dev/null; then return 0; fi
+    return 1
+  fi
+  # >=26.1.0：26.x 要 minor >= 1，27 及以上无条件满足。
+  # 不能写成「major >= 26 且 minor >= 1」——那会把 27.0.0 也拒掉。
+  if [ "$major" -gt 26 ] 2>/dev/null; then return 0; fi
+  if [ "$major" -eq 26 ] 2>/dev/null; then
+    if [ "$minor" -ge 1 ] 2>/dev/null; then return 0; fi
+  fi
+  return 1
+}
+
 ensure_node() {
   if [ "$SKIP_NODE" = 1 ]; then
     node_major_installed || warn "已指定 --no-node，但当前 Node 不满足 >= ${NODE_MAJOR}，后续 npm 安装可能失败"
@@ -493,9 +530,11 @@ ensure_node() {
   fi
 
   if node_major_installed; then
-    # 命中 dsh 时门槛更严：不满足就别在这里返回，继续往下走安装流程
+    # 命中 dsh / openclaw 时门槛更严：不满足就别在这里返回，继续往下走安装流程
     if tools_include dsh && ! node_satisfies_dsh; then
       warn "dsh 要求 Node ^22.19.0 || >=24.0.0，当前 $(node -v) 不满足，继续安装 Node ${NODE_MAJOR}"
+    elif tools_include openclaw && ! node_satisfies_openclaw; then
+      warn "openclaw 要求 Node >=24.16.0 <25 或 >=26.1.0，当前 $(node -v) 不满足，继续安装 Node ${NODE_MAJOR}"
     else
       ok "Node 已就绪：$(node -v)  ($(command -v node))"
       return 0
@@ -562,6 +601,7 @@ apply_registry() {
 
 # ---------------------------------------------------------------- 工具元数据
 DSH_PKG="@deepseek-ai/dsh"
+OPENCLAW_PKG="openclaw"
 
 tool_pkg() {
   case "$1" in
@@ -569,13 +609,14 @@ tool_pkg() {
     claude)   echo "@anthropic-ai/claude-code" ;;
     opencode) echo "opencode-ai" ;;
     dsh)      echo "$DSH_PKG" ;;
+    openclaw) echo "$OPENCLAW_PKG" ;;
     *) return 1 ;;
   esac
 }
 
 tool_bin() {
   case "$1" in
-    codex|claude|opencode|dsh) echo "$1" ;;
+    codex|claude|opencode|dsh|openclaw) echo "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -587,6 +628,8 @@ tool_config_path() {
     opencode) echo "$HOME/.config/opencode/opencode.jsonc" ;;
     # dsh 的是数据目录（profile 与会话），不是单个配置文件；脚本从不碰它
     dsh)      echo "${DSH_HOME:-$HOME/.dsh}/" ;;
+    # openclaw 同理：~/.openclaw 存配置、agents、workspace 和 sqlite 状态；脚本从不碰它
+    openclaw) echo "${OPENCLAW_HOME:-$HOME/.openclaw}/" ;;
   esac
 }
 
@@ -669,12 +712,22 @@ kind_label() {
   esac
 }
 
-# 装完还得让人知道怎么用。dsh 装完不会自己跑起来，得说清楚怎么起。
+# 装完还得让人知道怎么用。dsh / openclaw 装完都不会自己跑起来，得说清楚怎么起。
 tool_post_hint() {
-  if [ "$1" != dsh ]; then return 0; fi
-  printf '     启动：%s web --host 127.0.0.1 --port 3080\n' "$(tool_bin "$1")"
-  printf '     它会打印一个带 token 的地址，复制到浏览器打开；前台运行，Ctrl-C 停止\n'
-  printf '     需要设置 DEEPSEEK_API_KEY 才能真正调用模型\n'
+  case "$1" in
+    dsh)
+      printf '     启动：%s web --host 127.0.0.1 --port 3080\n' "$(tool_bin "$1")"
+      printf '     它会打印一个带 token 的地址，复制到浏览器打开；前台运行，Ctrl-C 停止\n'
+      printf '     需要设置 DEEPSEEK_API_KEY 才能真正调用模型\n'
+      ;;
+    openclaw)
+      printf '     首次配置：%s onboard\n' "$(tool_bin "$1")"
+      printf '     起网关：  %s gateway（前台运行，Ctrl-C 停止）\n' "$(tool_bin "$1")"
+      printf '     一次性：  %s agent --message "..."\n' "$(tool_bin "$1")"
+      printf '     配置、agents、workspace、sqlite 状态都在 ~/.openclaw，卸载时脚本不会碰\n'
+      ;;
+    *) return 0 ;;
+  esac
 }
 
 # 只删我们自己装下去的明确路径，删什么都会打日志
@@ -899,13 +952,24 @@ cmd_doctor() {
 
   step "工具"
   local t tv
-  for t in codex claude opencode dsh; do
+  for t in codex claude opencode dsh openclaw; do
     if tv="$(tool_version "$t")"; then
       printf '  %-9s %-18s %-12s %s\n' "$t" "$tv" "$(kind_label "$(tool_install_kind "$t")")" "$(tool_resolve "$t")"
     else
       printf '  %-9s %s\n' "$t" "未安装"
     fi
   done
+  # dsh / openclaw 的 Node 门槛比本脚本默认的 22 严，单独标出来，省得装完才发现起不来
+  if node_satisfies_dsh; then
+    printf '  %-9s %s\n' "dsh" "当前 Node $(node -v) 满足 ^22.19.0 || >=24.0.0"
+  else
+    printf '  %-9s %s\n' "dsh" "${C_YEL}当前 Node 不满足 ^22.19.0 || >=24.0.0${C_RST}（现为 $(node -v 2>/dev/null || echo 未知)）"
+  fi
+  if node_satisfies_openclaw; then
+    printf '  %-9s %s\n' "openclaw" "当前 Node $(node -v) 满足 >=24.16.0 <25 || >=26.1.0"
+  else
+    printf '  %-9s %s\n' "openclaw" "${C_YEL}当前 Node 不满足 >=24.16.0 <25 || >=26.1.0${C_RST}（现为 $(node -v 2>/dev/null || echo 未知)），单独装它会自动装 Node 24"
+  fi
   if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
     printf '  %-9s %s\n' "dsh" "DEEPSEEK_API_KEY 已设置"
   else
@@ -921,7 +985,7 @@ cmd_doctor() {
   printf '  %-34s %s\n' "api.deepseek.com（dsh 端点）" "$(probe_url https://api.deepseek.com/v1/models)"
 
   step "配置位置"
-  for t in codex claude opencode dsh; do
+  for t in codex claude opencode dsh openclaw; do
     printf '  %-9s %s\n' "$t" "$(tool_config_path "$t")"
   done
   printf '\n%s连通性一栏 200/30x/401 表示通（401 = 服务在，只是要凭据），FAIL 表示连不上。%s\n' "$C_DIM" "$C_RST"
@@ -954,19 +1018,32 @@ main() {
     exit 0
   fi
 
-  # 先预检再动手：让用户先看清三个工具的现状，再决定要不要重装
+  # 先预检再动手：让用户先看清各工具的现状，再决定要不要重装
   detect_prompt_capability
   preflight
 
   ensure_base_deps
+
+  # openclaw 要 Node >=24.16 <25 或 >=26.1，默认的 22 装了也起不来。既然要的是「一键安装」，
+  # 这里在用户没显式给 --node-major 时自动抬到 24（24.x 目前最高 24.21.0，落在区间内）。
+  # 显式给了就不动——那是用户的明确选择，下面只告警。
+  if [ "$NODE_MAJOR_EXPLICIT" = 0 ] && tools_include openclaw && [ "$NODE_MAJOR" -lt 24 ] 2>/dev/null; then
+    NODE_MAJOR=24
+    log "openclaw 需要 Node >= 24.16，自动把 Node 大版本抬到 ${NODE_MAJOR}"
+  fi
+
   ensure_node
 
-  # dsh 的门槛比 node_major_installed 严。在这里统一判一次，覆盖「Node 本来就装好了」
+  # dsh / openclaw 的门槛比 node_major_installed 严。在这里统一判一次，覆盖「Node 本来就装好了」
   # 「刚装完」「--no-node 跳过」三种情况——ensure_node 里那两个提前 return 都盖不全。
   # dry-run 不真装 Node，判了必然假报，直接跳过。
   if [ "$DRY_RUN" != 1 ] && tools_include dsh && ! node_satisfies_dsh; then
     warn "dsh 要求 Node 22.19+ 或 24+，当前 $(node -v 2>/dev/null || echo '未知') 不满足，dsh 装了也起不来"
     warn "用 --node-major 22 或 --node-major 24 让脚本装（默认 22 会装到 22.23.2），或自行升级 Node"
+  fi
+  if [ "$DRY_RUN" != 1 ] && tools_include openclaw && ! node_satisfies_openclaw; then
+    warn "openclaw 要求 Node >=24.16.0 <25 或 >=26.1.0，当前 $(node -v 2>/dev/null || echo '未知') 不满足，openclaw 装了也起不来"
+    warn "去掉 --node-major（默认会自动装 24）或改用 --node-major 24 / 26；注意 25.x 被 openclaw 明确排除"
   fi
 
   ensure_npm_prefix
@@ -984,6 +1061,10 @@ main() {
   done
   if tools_include dsh; then
     printf '\n  启动 dsh：%s web --host 127.0.0.1 --port 3080（前台运行，Ctrl-C 停止）\n' "$(tool_bin dsh)"
+  fi
+  if tools_include openclaw; then
+    printf '\n  启动 openclaw：%s onboard 首次配置，然后 %s gateway（前台运行，Ctrl-C 停止）\n' \
+      "$(tool_bin openclaw)" "$(tool_bin openclaw)"
   fi
 
   printf '\n%s提示：新装的命令在 %s，若当前 shell 找不到请执行 source ~/.bashrc 或重开终端。%s\n' \
