@@ -100,9 +100,9 @@ claude 已安装：2.1.278（官方安装器）
 
 **1. npm 官方源拉不动** → 走 npmmirror，失败自动切腾讯云、再切官方。
 
-**2. Node 二进制不好下** → nvm 本体从 Gitee 镜像克隆；Node tarball 走 npmmirror。npmmirror 的 `latest-vN.x/` 目录里装的是该大版本的**全部**补丁版（实测 v22 下有 44 个文件，22.0.0 到 22.20.0），所以必须比出版本号最大的那个，不能取第一个匹配。
+**2. Node 二进制不好下** → nvm 本体从 Gitee 镜像克隆；Node tarball 走 npmmirror。**注意 `latest-vN.x/` 目录列表是滞后的快照**：实测 npmmirror 的 `latest-v24.x/` 只列到 24.9.0，而 24.10.0 ~ 24.21.0 在 `vX.Y.Z/` 目录里都真实存在且可下（对照：`v24.99.99/` 与 `v23.99.0/` 都返回 404，确认那些 200 不是无脑返回）。所以脚本改为读 `index.json` 解析最高补丁版——那个文件是完整的（npmmirror 866 条、腾讯 863 条），nvm 自己读的也是它——再拼 `vX.Y.Z/` 的下载地址。只有镜像不提供 `index.json` 时才退回那份滞后列表，并明确告警。
 
-**3. `npmmirror.com/mirrors/node/...` 是 302 跳转**，跟随跳转后抓不到可解析的文件列表。要抓列表得用 `https://registry.npmmirror.com/-/binary/node/...`。
+**3. `npmmirror.com/mirrors/node/...` 是 302 跳转**，跟随跳转后抓不到可解析的文件列表。要抓列表得用 `https://registry.npmmirror.com/-/binary/node/...`。（`index.json` 同样是 302 跳 CDN，脚本的下载与探测都带 `-L`。）
 
 **4. GitHub Releases 基本没法直连** → 三个工具都优先走 npm 包（平台二进制通过 npm optionalDependencies 下发），而不是从 GitHub 拉发布产物。
 
@@ -150,6 +150,7 @@ dsh web --host 127.0.0.1 --port 3080
 
 ## 状态
 
+- **Node 版本解析（v1.2.1）**：原先从 `latest-vN.x/` 目录列表挑最高补丁版，而那份列表在镜像上是滞后的——`--node-major 24` 会装成 24.9.0，而不是 24.21.0。已改为读 `index.json`。在 Git Bash 下真下载并解压过 24.21.0（`node_version.h` 确认为 24.21.0），降级路径也单独验过（模拟无 `index.json` 的镜像，确认告警并正确退回老布局）
 - 在 Windows 的 Git Bash 下验证过：语法、`doctor`、`--dry-run`、`--uninstall`、非交互跳过、回答解析（`y/N/a/q`）
 - 在 Linux 上实测过 npm 路线安装 opencode（npm 11.19.0 / Node v24.21.0）
 - **dsh 部分**：`node_satisfies_dsh` 的 9 个版本用例（含必须被拒的 Node 23.x）、装/卸两条集成路径、以及「卸载不得触碰 `~/.dsh`」，都用假 node/npm + 沙箱 HOME 跑过

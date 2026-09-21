@@ -28,7 +28,7 @@ fi
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 
 # ---------------------------------------------------------------- 默认参数
 NODE_MAJOR="22"
@@ -249,7 +249,8 @@ fetch_file() {
 probe_url() {
   local url="$1" code
   command -v curl >/dev/null 2>&1 || { printf 'n/a'; return 0; }
-  code="$(curl -fsS --connect-timeout 6 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+  # -L：npmmirror 的 index.json 是 302 跳 CDN，不跟随就只会报个 302，看不出通不通
+  code="$(curl -fsSL --connect-timeout 6 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
   if [ -z "$code" ] || [ "$code" = "000" ]; then
     printf 'FAIL'
   else
@@ -369,7 +370,28 @@ _node_version_gt() {
   return 1
 }
 
-# latest-vN.x 目录里装的是该大版本的【全部】补丁版，必须比出版本号最大的那个
+# 从 <base>/index.json 解析该大版本的**最高**补丁版，成功时打印裸版本号（如 24.21.0）。
+#
+# 为什么不用 latest-vN.x/ 的目录列表：镜像上那份列表是滞后的快照。实测 npmmirror 的
+# latest-v24.x/ 只列到 24.9.0，而 24.10.0 ~ 24.21.0 在 vX.Y.Z/ 目录里都真实存在且可下
+# （对照：v24.99.99/ 与 v23.99.0/ 都返回 404，确认那些 200 不是无脑返回）。index.json
+# 则是完整的——npmmirror 866 条、腾讯 863 条，均为近期数据，nvm 自己也读这个文件。
+#
+# 正则要求右引号紧跟补丁号，'v26.0.0-rc.1' 这类预发布因此天然被排除。
+_node_latest_from_index() {
+  local base="$1" idx v best=""
+  idx="$(fetch_stdout "${base}/index.json")" || return 1
+  [ -n "$idx" ] || return 1
+  for v in $(printf '%s\n' "$idx" | grep -oE "v${NODE_MAJOR}\.[0-9]+\.[0-9]+\"" || true); do
+    v="${v%\"}"; v="${v#v}"
+    if [ -z "$best" ] || _node_version_gt "$v" "$best"; then best="$v"; fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+# 退回路径专用：从 latest-vN.x/ 的目录列表里比出版本号最大的那个。
+# 这份列表在主流镜像上是滞后的，只在镜像不提供 index.json 时才用。
 _pick_latest_node() {
   local f v best="" best_v=""
   for f in $1; do
@@ -383,7 +405,7 @@ _pick_latest_node() {
 }
 
 node_via_tarball() {
-  local arch dest base list matches fname url tmp extracted=0
+  local arch dest base list matches fname url tmp ver extracted=0
   arch="$(detect_node_arch)"
   dest="${NODE_HOME:-$HOME/.local/node}"
   tmp="$(mktmp)"
@@ -394,14 +416,26 @@ node_via_tarball() {
     "https://mirrors.cloud.tencent.com/nodejs-release"
   do
     log "从 $base 解析最新的 Node v${NODE_MAJOR}.x（linux-${arch}）"
-    list="$(fetch_stdout "$base/latest-v${NODE_MAJOR}.x/")" || continue
 
-    matches="$(printf '%s\n' "$list" | grep -oE "node-v${NODE_MAJOR}\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" || true)"
-    fname="$(_pick_latest_node "$matches")"
-    [ -n "$fname" ] || { warn "该源下没找到 linux-${arch} 的 Node v${NODE_MAJOR} 包"; continue; }
-    log "选中 $fname"
+    # 首选 index.json：完整、实时，且能拼出版本目录 URL。
+    ver="$(_node_latest_from_index "$base" || true)"
+    if [ -n "$ver" ]; then
+      fname="node-v${ver}-linux-${arch}.tar.xz"
+      url="$base/v${ver}/$fname"
+      log "选中 $fname"
+    else
+      # 退回 latest-vN.x/ 目录列表。只有镜像不提供 index.json 时才走到这里，
+      # 且这份列表可能是滞后的，选出的补丁版可能偏旧。
+      warn "$base 的 index.json 不可用，退回 latest-v${NODE_MAJOR}.x/ 目录列表（可能选到偏旧版本）"
+      list="$(fetch_stdout "$base/latest-v${NODE_MAJOR}.x/")" || continue
 
-    url="$base/latest-v${NODE_MAJOR}.x/$fname"
+      matches="$(printf '%s\n' "$list" | grep -oE "node-v${NODE_MAJOR}\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" || true)"
+      fname="$(_pick_latest_node "$matches")"
+      [ -n "$fname" ] || { warn "该源下没找到 linux-${arch} 的 Node v${NODE_MAJOR} 包"; continue; }
+      log "选中 $fname"
+      url="$base/latest-v${NODE_MAJOR}.x/$fname"
+    fi
+
     log "下载 $fname"
     fetch_file "$url" "$tmp/$fname" || { warn "下载失败：$url"; continue; }
 
@@ -880,7 +914,7 @@ cmd_doctor() {
 
   step "连通性"
   printf '  %-34s %s\n' "registry.npmmirror.com" "$(probe_url https://registry.npmmirror.com/ @openai/codex)"
-  printf '  %-34s %s\n' "npmmirror node 镜像" "$(probe_url "https://registry.npmmirror.com/-/binary/node/latest-v${NODE_MAJOR}.x/")"
+  printf '  %-34s %s\n' "npmmirror node 索引" "$(probe_url "https://registry.npmmirror.com/-/binary/node/index.json")"
   printf '  %-34s %s\n' "gitee.com" "$(probe_url https://gitee.com/)"
   printf '  %-34s %s\n' "claude.ai（官方安装器）" "$(probe_url https://claude.ai/install.sh)"
   printf '  %-34s %s\n' "api.openai.com（Codex 端点）" "$(probe_url https://api.openai.com/v1/models)"
@@ -932,7 +966,7 @@ main() {
   # dry-run 不真装 Node，判了必然假报，直接跳过。
   if [ "$DRY_RUN" != 1 ] && tools_include dsh && ! node_satisfies_dsh; then
     warn "dsh 要求 Node 22.19+ 或 24+，当前 $(node -v 2>/dev/null || echo '未知') 不满足，dsh 装了也起不来"
-    warn "用 --node-major 22 或 --node-major 24 让脚本装（默认 22 会装到 22.20.0），或自行升级 Node"
+    warn "用 --node-major 22 或 --node-major 24 让脚本装（默认 22 会装到 22.23.2），或自行升级 Node"
   fi
 
   ensure_npm_prefix
