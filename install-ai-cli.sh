@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# install-ai-cli.sh — 国内网络 Linux 一键安装 Codex / Claude Code / opencode
+# install-ai-cli.sh — 国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness
 #
 #   bash install-ai-cli.sh codex
 #   bash install-ai-cli.sh all
+#   bash install-ai-cli.sh dsh
 #   bash install-ai-cli.sh doctor
 #
 # 远程一条命令：
@@ -27,7 +28,7 @@ fi
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 
 # ---------------------------------------------------------------- 默认参数
 NODE_MAJOR="22"
@@ -110,7 +111,7 @@ ask() {
 # ---------------------------------------------------------------- 用法
 usage() {
   cat <<'EOF'
-国内网络 Linux 一键安装 Codex / Claude Code / opencode
+国内网络 Linux 一键安装 Codex / Claude Code / opencode / DeepSeek Harness
 
 用法:
   bash install-ai-cli.sh <命令> [选项]
@@ -119,20 +120,28 @@ usage() {
   codex                安装 OpenAI Codex CLI
   claude               安装 Claude Code
   opencode             安装 opencode
-  all                  三个全装
+  dsh                  安装 DeepSeek Harness
+  all                  上面三个 CLI 全装（不含 dsh）
   doctor               体检：打印环境、版本、路径、连通性
   version              打印脚本版本
   help                 显示本帮助
 
+dsh 与另外三个不一样，所以不并入 all：
+  它是常驻 Web 服务，不是敲完就结束的 CLI。装完用
+      dsh web --host 127.0.0.1 --port 3080
+  启动，前台运行、Ctrl-C 停止；它会打印一个带 token 的地址，复制到浏览器打开。
+  它对 Node 的要求也更严（^22.19.0 || >=24.0.0），脚本会自动检查。
+  dsh 目前是开发者预览版（-rc），且需要 DEEPSEEK_API_KEY 才能真正调用模型。
+
 已安装的工具不会被直接覆盖：
-  脚本先做一次预检，把三个工具的安装状态列出来，然后对每个已安装的
+  脚本先做一次预检，把各工具的安装状态列出来，然后对每个已安装的
   工具单独询问「是否卸载并重新安装」。可回答 y / N / a / q。
 
 选项:
       --reinstall          跳过询问，已装的一律卸载重装（同 --upgrade）
   -f, --force, --upgrade   同 --reinstall
   -y, --yes                非交互：已安装的一律跳过，不重装
-      --uninstall          卸载指定工具（配合 codex/claude/opencode/all）
+      --uninstall          卸载指定工具（配合 codex/claude/opencode/dsh/all）
       --registry <URL>     npm 源，默认 https://registry.npmmirror.com
       --node-mirror <URL>  Node 二进制源，默认 https://registry.npmmirror.com/-/binary/node
       --node-major <N>     Node 大版本，默认 22
@@ -157,7 +166,7 @@ EOF
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      codex|claude|opencode|all|doctor|version|help) CMD="$1" ;;
+      codex|claude|opencode|dsh|all|doctor|version|help) CMD="$1" ;;
       -h|--help)            CMD="help" ;;
       -f|--force|--upgrade|--reinstall) FORCE=1 ;;
       -y|--yes)             YES=1 ;;
@@ -411,6 +420,38 @@ node_via_tarball() {
   node_major_installed
 }
 
+# TOOLS 里是否包含某个工具（TOOLS 由 main 按命令填好）
+tools_include() {
+  local x
+  for x in $TOOLS; do
+    if [ "$x" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+
+# dsh 的 engines 是 ^22.19.0 || >=24.0.0，比本脚本默认的「大版本 >= 22」严。
+# 特别注意 23.x：它满足 >=22，却不满足 dsh 的 >=24.0.0 —— 不单独判会漏掉。
+# 全部判断都写在 if 条件里，这样无论谁在什么上下文调用都不会踩到 set -e。
+node_satisfies_dsh() {
+  command -v node >/dev/null 2>&1 || return 1
+  local v major minor rest
+  v="$(node -v 2>/dev/null || true)"
+  v="${v#v}"
+  major="${v%%.*}"
+  case "$v" in
+    *.*) rest="${v#*.}"; minor="${rest%%.*}" ;;
+    *)   minor=0 ;;
+  esac
+  if [ -z "$major" ]; then return 1; fi
+  if [ -z "$minor" ]; then minor=0; fi
+  if [ "$major" -eq 22 ] 2>/dev/null; then
+    if [ "$minor" -ge 19 ] 2>/dev/null; then return 0; fi
+    return 1
+  fi
+  if [ "$major" -ge 24 ] 2>/dev/null; then return 0; fi
+  return 1
+}
+
 ensure_node() {
   if [ "$SKIP_NODE" = 1 ]; then
     node_major_installed || warn "已指定 --no-node，但当前 Node 不满足 >= ${NODE_MAJOR}，后续 npm 安装可能失败"
@@ -418,8 +459,13 @@ ensure_node() {
   fi
 
   if node_major_installed; then
-    ok "Node 已就绪：$(node -v)  ($(command -v node))"
-    return 0
+    # 命中 dsh 时门槛更严：不满足就别在这里返回，继续往下走安装流程
+    if tools_include dsh && ! node_satisfies_dsh; then
+      warn "dsh 要求 Node ^22.19.0 || >=24.0.0，当前 $(node -v) 不满足，继续安装 Node ${NODE_MAJOR}"
+    else
+      ok "Node 已就绪：$(node -v)  ($(command -v node))"
+      return 0
+    fi
   fi
 
   step "安装 Node.js ${NODE_MAJOR}+"
@@ -481,18 +527,21 @@ apply_registry() {
 }
 
 # ---------------------------------------------------------------- 工具元数据
+DSH_PKG="@deepseek-ai/dsh"
+
 tool_pkg() {
   case "$1" in
     codex)    echo "@openai/codex" ;;
     claude)   echo "@anthropic-ai/claude-code" ;;
     opencode) echo "opencode-ai" ;;
+    dsh)      echo "$DSH_PKG" ;;
     *) return 1 ;;
   esac
 }
 
 tool_bin() {
   case "$1" in
-    codex|claude|opencode) echo "$1" ;;
+    codex|claude|opencode|dsh) echo "$1" ;;
     *) return 1 ;;
   esac
 }
@@ -502,6 +551,8 @@ tool_config_path() {
     codex)    echo "$HOME/.codex/config.toml" ;;
     claude)   echo "$HOME/.claude/settings.json" ;;
     opencode) echo "$HOME/.config/opencode/opencode.jsonc" ;;
+    # dsh 的是数据目录（profile 与会话），不是单个配置文件；脚本从不碰它
+    dsh)      echo "${DSH_HOME:-$HOME/.dsh}/" ;;
   esac
 }
 
@@ -528,6 +579,29 @@ tool_resolve() {
 
 tool_version() {
   local p out
+
+  # dsh 不能拿 `--version` 探：它是应用启动器，上游明确写「启动器不认识的第一个
+  # 参数会被交给 profile」。`dsh --version` 有可能真的去启动一个 web profile，
+  # 那预检就会一直挂在那儿。改为直接读已安装包的 package.json：确定、快、无副作用。
+  if [ "$1" = dsh ]; then
+    local root
+    root="$(npm root -g 2>/dev/null || true)"
+    if [ -n "$root" ] && [ -f "$root/$DSH_PKG/package.json" ]; then
+      out="$(node -p "require('$root/$DSH_PKG/package.json').version" 2>/dev/null || true)"
+      if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
+    fi
+    # 兜底：读不到包（npm root -g 不可用等）。加超时，免得真被挂住
+    p="$(tool_resolve "$1")" || return 1
+    if command -v timeout >/dev/null 2>&1; then
+      out="$(timeout 5 "$p" --version 2>/dev/null || true)"
+    else
+      out="$("$p" --version 2>/dev/null || true)"
+    fi
+    [ -n "$out" ] || return 1
+    printf '%s\n' "${out%%$'\n'*}"
+    return 0
+  fi
+
   p="$(tool_resolve "$1")" || return 1
   out="$("$p" --version 2>/dev/null || true)"
   [ -n "$out" ] || return 1
@@ -559,6 +633,14 @@ kind_label() {
     other)  echo "其他来源" ;;
     *)      echo "未知来源" ;;
   esac
+}
+
+# 装完还得让人知道怎么用。dsh 装完不会自己跑起来，得说清楚怎么起。
+tool_post_hint() {
+  if [ "$1" != dsh ]; then return 0; fi
+  printf '     启动：%s web --host 127.0.0.1 --port 3080\n' "$(tool_bin "$1")"
+  printf '     它会打印一个带 token 的地址，复制到浏览器打开；前台运行，Ctrl-C 停止\n'
+  printf '     需要设置 DEEPSEEK_API_KEY 才能真正调用模型\n'
 }
 
 # 只删我们自己装下去的明确路径，删什么都会打日志
@@ -692,6 +774,7 @@ install_tool() {
     else
       ok "$t 安装成功：$tv"
       printf '     路径：%s\n' "$resolved"
+      tool_post_hint "$t"
     fi
   else
     warn "$pkg 已装但 $(tool_bin "$t") 无法执行。若是平台二进制没下发成功，请挂代理重试。"
@@ -782,13 +865,18 @@ cmd_doctor() {
 
   step "工具"
   local t tv
-  for t in codex claude opencode; do
+  for t in codex claude opencode dsh; do
     if tv="$(tool_version "$t")"; then
       printf '  %-9s %-18s %-12s %s\n' "$t" "$tv" "$(kind_label "$(tool_install_kind "$t")")" "$(tool_resolve "$t")"
     else
       printf '  %-9s %s\n' "$t" "未安装"
     fi
   done
+  if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    printf '  %-9s %s\n' "dsh" "DEEPSEEK_API_KEY 已设置"
+  else
+    printf '  %-9s %s\n' "dsh" "${C_YEL}未设置 DEEPSEEK_API_KEY${C_RST}（服务能起，但无法调用模型）"
+  fi
 
   step "连通性"
   printf '  %-34s %s\n' "registry.npmmirror.com" "$(probe_url https://registry.npmmirror.com/ @openai/codex)"
@@ -796,12 +884,13 @@ cmd_doctor() {
   printf '  %-34s %s\n' "gitee.com" "$(probe_url https://gitee.com/)"
   printf '  %-34s %s\n' "claude.ai（官方安装器）" "$(probe_url https://claude.ai/install.sh)"
   printf '  %-34s %s\n' "api.openai.com（Codex 端点）" "$(probe_url https://api.openai.com/v1/models)"
+  printf '  %-34s %s\n' "api.deepseek.com（dsh 端点）" "$(probe_url https://api.deepseek.com/v1/models)"
 
   step "配置位置"
-  for t in codex claude opencode; do
+  for t in codex claude opencode dsh; do
     printf '  %-9s %s\n' "$t" "$(tool_config_path "$t")"
   done
-  printf '\n%s连通性一栏 200/30x 表示通，FAIL 表示连不上。%s\n' "$C_DIM" "$C_RST"
+  printf '\n%s连通性一栏 200/30x/401 表示通（401 = 服务在，只是要凭据），FAIL 表示连不上。%s\n' "$C_DIM" "$C_RST"
 }
 
 # ---------------------------------------------------------------- main
@@ -837,6 +926,15 @@ main() {
 
   ensure_base_deps
   ensure_node
+
+  # dsh 的门槛比 node_major_installed 严。在这里统一判一次，覆盖「Node 本来就装好了」
+  # 「刚装完」「--no-node 跳过」三种情况——ensure_node 里那两个提前 return 都盖不全。
+  # dry-run 不真装 Node，判了必然假报，直接跳过。
+  if [ "$DRY_RUN" != 1 ] && tools_include dsh && ! node_satisfies_dsh; then
+    warn "dsh 要求 Node 22.19+ 或 24+，当前 $(node -v 2>/dev/null || echo '未知') 不满足，dsh 装了也起不来"
+    warn "用 --node-major 22 或 --node-major 24 让脚本装（默认 22 会装到 22.20.0），或自行升级 Node"
+  fi
+
   ensure_npm_prefix
   apply_registry
 
@@ -850,6 +948,10 @@ main() {
   for t in $TOOLS; do
     printf '    %-9s %s\n' "$t" "$(tool_config_path "$t")"
   done
+  if tools_include dsh; then
+    printf '\n  启动 dsh：%s web --host 127.0.0.1 --port 3080（前台运行，Ctrl-C 停止）\n' "$(tool_bin dsh)"
+  fi
+
   printf '\n%s提示：新装的命令在 %s，若当前 shell 找不到请执行 source ~/.bashrc 或重开终端。%s\n' \
     "$C_DIM" "$NPM_BIN_DIR" "$C_RST"
 

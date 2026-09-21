@@ -1,8 +1,10 @@
 # install-ai-cli
 
-国内网络下 Linux 一键安装 **Codex CLI** / **Claude Code** / **opencode**。
+国内网络下 Linux 一键安装 **Codex CLI** / **Claude Code** / **opencode** / **DeepSeek Harness (dsh)**。
 
-一个不带依赖的 bash 脚本，把国内环境装这三个 CLI 时会撞上的坑一次性填掉：Node 版本不够、npm 拉不动、平台二进制下发失败、GitHub 直连被重置。
+一个不带依赖的 bash 脚本，把国内环境装这几个工具时会撞上的坑一次性填掉：Node 版本不够、npm 拉不动、平台二进制下发失败、GitHub 直连被重置。
+
+> dsh 和前三个不是一类东西：它是**常驻 Web 服务**，不是敲完就结束的 CLI。所以它**不并入 `all`**，装完之后还需要你自己启动。详见下面「dsh 怎么用」。
 
 ## 特性
 
@@ -37,10 +39,13 @@ bash install-ai-cli.sh all
 | `codex` | 安装 OpenAI Codex CLI |
 | `claude` | 安装 Claude Code |
 | `opencode` | 安装 opencode |
-| `all` | 三个全装 |
-| `doctor` | 体检：系统、Node/npm、三个工具状态、网络连通性 |
+| `dsh` | 安装 DeepSeek Harness |
+| `all` | 上面三个 CLI 全装（**不含 dsh**） |
+| `doctor` | 体检：系统、Node/npm、各工具状态、网络连通性 |
 | `version` | 打印脚本版本 |
 | `help` | 帮助 |
+
+`dsh` 同样支持 `--uninstall`（只摘 npm 包，**不动 `~/.dsh` 里的 profile 与会话数据**）。
 
 ## 选项
 
@@ -89,6 +94,7 @@ claude 已安装：2.1.278（官方安装器）
 - **发行版**：Debian/Ubuntu、RHEL/CentOS/Rocky/Alma、Fedora、Arch、Alpine、openSUSE
 - **架构**：x86_64、aarch64/arm64、armv7l、ppc64le、s390x
 - **Node**：需 ≥ 22（脚本会自动装）。LoongArch 官方无 Node 构建，脚本会明确报错并让你用 `--no-node`
+- **Node（dsh 专用）**：dsh 要求 `^22.19.0 || >=24.0.0`，比上面严。脚本会单独检查，不满足时会提示怎么处理。注意 **Node 23.x 会被拒**——它满足 `>=22`，但落在 `>=24.0.0` 之外
 
 ## 国内网络的几个坑（脚本已处理）
 
@@ -109,20 +115,46 @@ claude 已安装：2.1.278（官方安装器）
 | codex | `~/.codex/config.toml` |
 | claude | `~/.claude/settings.json` |
 | opencode | `~/.config/opencode/opencode.jsonc` |
+| dsh | `~/.dsh/`（目录，存 profile 与会话） |
 
 `bash install-ai-cli.sh doctor` 的「连通性」一栏会告诉你哪些端点通、哪些不通。
+
+## dsh 怎么用
+
+脚本只负责**装**，不负责跑。装完自己启动：
+
+```bash
+dsh web --host 127.0.0.1 --port 3080
+```
+
+- 它会在终端打印一个**带 token 的地址**，复制到浏览器打开
+- **前台运行**，`Ctrl-C` 停止
+- 想换端口就改 `--port`
+
+另外两件事：
+
+1. **要设 `DEEPSEEK_API_KEY`**，否则界面能打开但调不了模型。`doctor` 里会提示你有没有设。
+2. **`--host 0.0.0.0` 不被支持**，dsh 会直接报错。只接受 `127.0.0.1` 或具体网卡地址。
+
+> dsh 的版本控制、日志、开机自启等，本脚本都不管。`dsh -h` 和 `dsh web --help` 是上游自己的帮助。
 
 ## 已知限制
 
 - **Claude Code 的 npm 路线已被官方弃用**（2026 年 1 月起）。包还能用，但不再自动更新，升级要重跑 `--upgrade`。想要 native 安装加 `--native`。
 - **npm 12 默认拦截安装脚本**（`postinstall`）。这三个包都依赖 `postinstall` 把平台二进制链接到 `bin/`，届时可能会装出可执行但不完整的壳。脚本目前**尚未处理**这一点——`--version` 对这类「壳 + 平台二进制」的包不是可靠的体检项。npm 11.16～11.x 只有警告、脚本照跑，不受影响。
 - **安装包后如果 PATH 上先命中旧版本**（例如系统包管理器装的），脚本会提示，但不会替你卸载它。
+- **dsh 目前是开发者预览版**（npm 上是 `-rc` / `-alpha`），上游明确标注 developer preview，行为可能变。
+- **探测 dsh 版本不能跑 `dsh --version`**：它是应用启动器，上游规定「启动器不认识的参数会被交给 profile」，直接跑有可能真去拉起一个 web profile 把预检挂住。脚本改为读已安装包的 `package.json`，只在读不到时才退回 `--version`（带 5 秒超时）。
+- **dsh 的依赖树很大**（73 个生产依赖）。爬取时实测这些在国内镜像上零缺失，但安装会比另外三个慢。
+- **dsh 只走 npm 预编译包，不提供源码构建**。本脚本不 clone 仓库、不装 pnpm、不编译。要改 dsh 源码请自行 clone 上游。
 
 ## 状态
 
 - 在 Windows 的 Git Bash 下验证过：语法、`doctor`、`--dry-run`、`--uninstall`、非交互跳过、回答解析（`y/N/a/q`）
 - 在 Linux 上实测过 npm 路线安装 opencode（npm 11.19.0 / Node v24.21.0）
-- **尚未在完整 Linux 环境跑通全部落盘路径**（`nvm install`、`tar -xJf`、三个工具的 npm 安装）
+- **dsh 部分**：`node_satisfies_dsh` 的 9 个版本用例（含必须被拒的 Node 23.x）、装/卸两条集成路径、以及「卸载不得触碰 `~/.dsh`」，都用假 node/npm + 沙箱 HOME 跑过
+- **尚未在完整 Linux 环境跑通全部落盘路径**（`nvm install`、`tar -xJf`、各工具的 npm 安装）
+- **dsh 的 npm 安装与 `dsh web` 启动尚未在真机跑过**。`@deepseek-ai/dsh` 的可装性是在 npm 元数据层面验证的（73 个生产依赖在国内镜像零缺失、平台二进制走 optionalDependencies 正常下发），但最终仍需真机确认一次
 
 ## License
 
