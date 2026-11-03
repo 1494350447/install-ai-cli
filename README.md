@@ -194,3 +194,18 @@ openclaw agent --message "..."
 ## License
 
 未指定。
+
+## 本地开发
+
+克隆仓库后直接运行 `bash install-ai-cli.sh` 即可，脚本没有任何依赖（无需先安装或构建）：
+
+```bash
+git clone <本仓库地址>
+cd install-ai-cli
+bash install-ai-cli.sh doctor     # 先体检；要安装就把 doctor 换成对应命令
+```
+
+如果要改动脚本本身：
+
+1. 用 `bash -n install-ai-cli.sh` 做语法检查。
+2. 在真机（或容器）里跑一遍预检菜单，确认交互与输出正常。
