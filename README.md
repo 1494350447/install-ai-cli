@@ -1,5 +1,7 @@
 # install-ai-cli
 
+[简体中文](README.md) | [English](README.en.md)
+
 国内网络下 Linux 一键安装 **Codex CLI** / **Claude Code** / **opencode** / **DeepSeek Harness (dsh)** / **OpenClaw**。
 
 一个不带依赖的 bash 脚本，把国内环境装这几个工具时会撞上的坑一次性填掉：Node 版本不够、npm 拉不动、平台二进制下发失败、GitHub 直连被重置。
