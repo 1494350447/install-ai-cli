@@ -1,6 +1,6 @@
 # install-ai-cli
 
-[简体中文](README.md) | [English](README.en.md)
+[简体中文](README.md) | [English](README.en.md) | [Deutsch](README.de.md)
 
 One-command Linux installer for **Codex CLI** / **Claude Code** / **opencode** / **DeepSeek Harness (dsh)** / **OpenClaw**, designed for mainland China's network environment.
 
