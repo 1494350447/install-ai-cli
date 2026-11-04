@@ -1,6 +1,6 @@
 # install-ai-cli
 
-[简体中文](README.md) | [English](README.en.md) | [Deutsch](README.de.md)
+[简体中文](README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Français](README.fr.md)
 
 国内网络下 Linux 一键安装 **Codex CLI** / **Claude Code** / **opencode** / **DeepSeek Harness (dsh)** / **OpenClaw**。
 
